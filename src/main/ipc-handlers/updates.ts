@@ -22,8 +22,11 @@ export default () => {
       mainWindow = event;
       if (process.windowsStore || (process.platform === 'linux' && !process.env.APPIMAGE))
          mainWindow.reply('no-auto-update');
-      else if (isMacOS) { // Temporary solution on MacOS for unsigned app updates
+      else if (isMacOS) { // Unsigned app, it can't install updates, so only check and link to the download page
          autoUpdater.autoDownload = false;
+         autoUpdater.checkForUpdates().catch(() => {
+            mainWindow.reply('check-failed');
+         });
       }
       else {
          autoUpdater.checkForUpdatesAndNotify().catch(() => {

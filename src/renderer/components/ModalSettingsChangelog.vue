@@ -35,15 +35,16 @@ const openOutside = (link: string) => {
 
 const getChangelog = async () => {
    try {
-      const apiRes = await fetch(`https://api.github.com/repos/antares-sql/antares/releases/tags/v${appVersion}`, {
+      const apiRes = await fetch(`https://api.github.com/repos/mikethms/antares/releases/tags/v${appVersion}`, {
          method: 'GET'
       });
 
       const { body } = await apiRes.json();
-      const cutOffset = body.indexOf('### Download');
-      const markdown = cutOffset >= 0
-         ? body.substr(0, cutOffset)
-         : body;
+      const cutOffsets = ['### Download', '## New Contributors', '**Full Changelog**']
+         .map(marker => body.indexOf(marker))
+         .filter(offset => offset >= 0);
+      const markdown = (cutOffsets.length ? body.substr(0, Math.min(...cutOffsets)) : body)
+         .replace(/ by @[\w-]+(\[bot\])? in https:\/\/\S+/g, ''); // GitHub generated notes
 
       const renderer = {
          link (href: string, title: string, text: string) {

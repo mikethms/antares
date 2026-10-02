@@ -57,7 +57,8 @@ jobs:
           # No Developer ID certificate available, skip looking for one
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
+      # latest-mac.yml lets the app's update check find this release
       - name: Upload DMG to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$TAG" build/*.dmg --clobber
+        run: gh release upload "$TAG" build/*.dmg build/latest-mac.yml --clobber
