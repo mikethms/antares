@@ -227,7 +227,7 @@ const selectedSchema = ref('');
 const selectedTable = ref(null);
 const selectedMisc = ref(null);
 const searchTerm = ref('');
-const searchMethod: Ref<'elements' | 'schemas'> = ref('elements');
+const searchMethod: Ref<'elements' | 'schemas'> = ref('schemas');
 
 const workspace = computed(() => {
    return getWorkspace(props.connection.uid);
