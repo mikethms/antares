@@ -82,10 +82,16 @@ type builtinsTypes =
    'JSONB' |
    'REGNAMESPACE' |
    'REGROLE';
+
+const LOST_TRANSACTION_MESSAGE = 'Connection lost, the uncommitted transaction was discarded';
+
 export class PostgreSQLClient extends BaseClient {
    private _schema?: string;
    private _runningConnections: Map<string, number>;
    private _connectionsToCommit: Map<string, pg.Client | pg.PoolClient>;
+   private _brokenConnections: WeakSet<pg.Client>;
+   private _reconnecting?: Promise<pg.Client>;
+   private _dbConfig?: pg.ClientConfig;
    private _keepaliveTimer: NodeJS.Timer;
    private _keepaliveMs: number;
    protected _connection?: pg.Client | pg.Pool;
@@ -108,6 +114,7 @@ export class PostgreSQLClient extends BaseClient {
       this._schema = null;
       this._runningConnections = new Map();
       this._connectionsToCommit = new Map();
+      this._brokenConnections = new WeakSet();
       this._keepaliveMs = 10*60*1000;
 
       for (const key in pg.types.builtins) {
@@ -150,6 +157,8 @@ export class PostgreSQLClient extends BaseClient {
    }
 
    async getDbConfig () {
+      if (this._dbConfig) return this._dbConfig; // Reuses the SSH tunnel on reconnect
+
       this._params.application_name = 'Antares SQL';
 
       const dbConfig = {
@@ -159,7 +168,9 @@ export class PostgreSQLClient extends BaseClient {
          connectionString: this._params.connectionString,
          database: 'postgres' as string,
          password: this._params.password,
-         ssl: null as ConnectionOptions
+         ssl: null as ConnectionOptions,
+         keepAlive: true,
+         keepAliveInitialDelayMillis: 10000
       };
 
       if (this._params.database?.length) dbConfig.database = this._params.database;
@@ -192,6 +203,7 @@ export class PostgreSQLClient extends BaseClient {
          }
       }
 
+      this._dbConfig = dbConfig;
       return dbConfig;
    }
 
@@ -207,18 +219,63 @@ export class PostgreSQLClient extends BaseClient {
 
    async getConnection () {
       const dbConfig = await this.getDbConfig();
-      const client = new pg.Client(dbConfig);
-      await client.connect();
-      const connection = client;
+      const connection = new pg.Client(dbConfig);
+
+      connection.on('error', err => {
+         this._brokenConnections.add(connection);
+         this._logger({ cUid: this._cUid, content: err.message, level: 'error' });
+      });
+
+      connection.on('end', () => {
+         this._brokenConnections.add(connection);
+      });
+
+      await connection.connect();
 
       if (this._params.readonly)
          await connection.query('SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY');
 
-      connection.on('error', err => { // Intercepts errors and converts to rejections
-         Promise.reject(err);
-      });
-
       return connection;
+   }
+
+   /**
+    * Returns the single client, replacing it with a new one if the previous was lost
+    */
+   private async getSingleConnection () {
+      const connection = this._connection as pg.Client;
+
+      if (connection && !this._brokenConnections.has(connection))
+         return connection;
+
+      if (!this._reconnecting) {
+         this._reconnecting = (async () => {
+            const newConnection = await this.getConnection();
+
+            if (this._schema)
+               await newConnection.query(`SET search_path TO "${this._schema}"`);
+
+            this._connection = newConnection;
+            return newConnection;
+         })().finally(() => {
+            this._reconnecting = undefined;
+         });
+      }
+
+      return this._reconnecting;
+   }
+
+   /**
+    * Drops the tab connection if it was lost, the open transaction is gone with it
+    */
+   private dropLostConnectionToCommit (tabUid: string) {
+      const connection = this._connectionsToCommit.get(tabUid);
+
+      if (connection && this._brokenConnections.has(connection as pg.Client)) {
+         this._connectionsToCommit.delete(tabUid);
+         return true;
+      }
+
+      return false;
    }
 
    async getConnectionPool () {
@@ -226,7 +283,7 @@ export class PostgreSQLClient extends BaseClient {
       const pool = new pg.Pool({
          ...dbConfig,
          max: this._poolSize,
-         idleTimeoutMillis: 0
+         idleTimeoutMillis: 30000
       });
       const connection = pool;
 
@@ -240,8 +297,8 @@ export class PostgreSQLClient extends BaseClient {
          await this.keepAlive();
       }, this._keepaliveMs);
 
-      connection.on('error', err => { // Intercepts errors and converts to rejections
-         Promise.reject(err);
+      connection.on('error', err => { // Idle clients are removed from the pool by pg
+         this._logger({ cUid: this._cUid, content: err.message, level: 'error' });
       });
 
       return connection;
@@ -253,6 +310,7 @@ export class PostgreSQLClient extends BaseClient {
 
    destroy () {
       this._connection.end();
+      this._dbConfig = undefined;
       clearInterval(this._keepaliveTimer);
       this._keepaliveTimer = undefined;
       if (this._ssh) {
@@ -1572,6 +1630,9 @@ export class PostgreSQLClient extends BaseClient {
    }
 
    async commitTab (tabUid: string) {
+      if (this.dropLostConnectionToCommit(tabUid))
+         throw new Error(LOST_TRANSACTION_MESSAGE);
+
       const connection = this._connectionsToCommit.get(tabUid);
       if (connection) {
          await connection.query('COMMIT');
@@ -1580,6 +1641,9 @@ export class PostgreSQLClient extends BaseClient {
    }
 
    async rollbackTab (tabUid: string) {
+      if (this.dropLostConnectionToCommit(tabUid))
+         return; // The server already discarded the transaction
+
       const connection = this._connectionsToCommit.get(tabUid);
       if (connection) {
          await connection.query('ROLLBACK');
@@ -1673,6 +1737,9 @@ export class PostgreSQLClient extends BaseClient {
       const isPool = this._connection instanceof pg.Pool;
 
       if (!args.autocommit && args.tabUid) { // autocommit OFF
+         if (this.dropLostConnectionToCommit(args.tabUid))
+            throw new Error(LOST_TRANSACTION_MESSAGE);
+
          if (this._connectionsToCommit.has(args.tabUid))
             connection = this._connectionsToCommit.get(args.tabUid);
          else {
@@ -1682,7 +1749,7 @@ export class PostgreSQLClient extends BaseClient {
          }
       }
       else { // autocommit ON
-         connection = isPool ? await this._connection.connect() as pg.PoolClient : this._connection as pg.Client;
+         connection = isPool ? await this._connection.connect() as pg.PoolClient : await this.getSingleConnection();
       }
 
       if (args.tabUid && isPool)
