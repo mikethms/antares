@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.7.38](https://github.com/mikethms/antares/compare/v0.7.37...v0.7.38) (2026-10-06)
+
+
+### Features
+
+* check updates and show the changelog from the fork ([22d0c7c](https://github.com/mikethms/antares/commit/22d0c7c29b0ed23a53989eb105541140e001945b))
+* **ui:** default explorebar search method to schemas ([2aac822](https://github.com/mikethms/antares/commit/2aac822dd14707be2c2470648d20f3ea94715485))
+
+
+### Bug Fixes
+
+* **postgresql:** recover from lost connections after a network switch ([0da6981](https://github.com/mikethms/antares/commit/0da69813fc2762e15962c29be3bbd902a24f8169))
+
 ### [0.7.37](https://github.com/mikethms/antares/compare/v0.7.36...v0.7.37) (2026-09-23)
 
 ### [0.7.35](https://github.com/antares-sql/antares/compare/v0.7.35-beta.1...v0.7.35) (2025-06-17)
